@@ -172,6 +172,10 @@ def main():
     )
 
     file = st.file_uploader("Upload a JSON file", type=["json"])
+
+    if st.button("Process Data"):
+        plot_data(processed_data, month)
+
     if file is not None:
         data = load_data(file)
         if data is not None:
@@ -181,8 +185,7 @@ def main():
             if st.sidebar.button("Plot Data"):
                 plot_data(processed_data, month)
 
-    if st.button("Process Data"):
-        plot_data(processed_data, month)
+
 
 if __name__ == "__main__":
     main()
