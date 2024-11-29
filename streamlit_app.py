@@ -5,7 +5,7 @@ This Streamlit application processes and visualizes cost data from a JSON file.
 It generates plots for total tokens used and total costs by model and user.
 
 Author: bgeneto
-Version: 0.2.1
+Version: 0.2.2
 Date: 2024-11-29
 """
 
@@ -155,17 +155,22 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
 
 def main():
     st.set_page_config(page_title="Cost Tracker App", page_icon="💵")
+
     st.title("Cost Tracker for Open WebUI")
     st.divider()
+
     st.page_link(
         "https://github.com/bgeneto/open-webui-cost-tracker/",
         label="GitHub Page",
         icon="🏠",
     )
+
     st.sidebar.title("⚙️ Options")
+
     st.info(
         "This Streamlit app processes and visualizes cost data from a JSON file. Select a JSON file below and a month to plot the data."
     )
+
     file = st.file_uploader("Upload a JSON file", type=["json"])
     if file is not None:
         data = load_data(file)
@@ -176,6 +181,8 @@ def main():
             if st.sidebar.button("Plot Data"):
                 plot_data(processed_data, month)
 
+    if st.button("Plot Data"):
+        plot_data(processed_data, month)
 
 if __name__ == "__main__":
     main()
