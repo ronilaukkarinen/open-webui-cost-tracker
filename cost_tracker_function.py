@@ -1,10 +1,10 @@
 """
-title: Cost Tracker
+title: Cost Tracker for Open WebUI
 description: This function is designed to manage and calculate the costs associated with user interactions and model usage in a Open WebUI.
 author: bgeneto
 author_url: https://github.com/bgeneto/open-webui-cost-tracker
 funding_url: https://github.com/open-webui
-version: 0.2.2
+version: 0.3.0
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -27,17 +27,21 @@ import tiktoken
 from cachetools import TTLCache, cached
 from open_webui.utils.misc import get_last_assistant_message, get_messages_content
 from pydantic import BaseModel, Field
+from rapidfuzz import fuzz
 
 
 class Config:
     DATA_DIR = "data"
     CACHE_DIR = os.path.join(DATA_DIR, ".cache")
-    USER_COST_FILE = os.path.join(DATA_DIR, f"costs-{datetime.now().year}.json")
+    USER_COST_FILE = os.path.join(
+        DATA_DIR,
+        f"costs-{datetime.now().year:04d}-{datetime.now().month:02d}.json"
+    )
     CACHE_TTL = 432000  # try to keep model pricing json file for 5 days in the cache.
     CACHE_MAXSIZE = 16
     DECIMALS = "0.00000001"
-    DEBUG_PREFIX = "DEBUG:    " + __name__ + " -"
-    INFO_PREFIX = "INFO:     " + __name__ + " -"
+    DEBUG_PREFIX = "DEBUG:    " + __name__.upper() + " -"
+    INFO_PREFIX = "INFO:     " + __name__.upper() + " -"
     DEBUG = False
 
 
@@ -75,30 +79,33 @@ class UserCostManager:
             json.dump(costs, cost_file, indent=4)
 
     def update_user_cost(
-        self,
-        user_email: str,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-        total_cost: Decimal,
-    ):
-        costs = self._read_costs()
-        timestamp = datetime.now().isoformat()
+            self,
+            user_email: str,
+            model: str,
+            input_tokens: int,
+            output_tokens: int,
+            total_cost: Decimal,
+        ):
+            costs = self._read_costs()
+            timestamp = datetime.now().isoformat()
 
-        if user_email not in costs:
-            costs[user_email] = []
+            # Ensure costs is a list
+            if not isinstance(costs, list):
+                costs = []
 
-        costs[user_email].append(
-            {
-                "model": model,
-                "timestamp": timestamp,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_cost": str(total_cost),
-            }
-        )
+            # Add new usage record directly to list
+            costs.append(
+                {
+                    "user": user_email,
+                    "model": model,
+                    "timestamp": timestamp,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_cost": str(total_cost),
+                }
+            )
 
-        self._write_costs(costs)
+            self._write_costs(costs)
 
 
 class ModelCostManager:
@@ -214,7 +221,19 @@ class ModelCostManager:
         if query_lower in keys_lower:
             return keys_lower[query_lower]
 
-        # Fallback to Levenshtein distance matching if no exact match is found
+        # If no exact match is found, try fuzzy partial matching
+        start = time.time()
+        partial_ratios = [(fuzz.ratio(key, query_lower), key) for key in keys_lower]
+        best_match, best_key = max(partial_ratios, key=lambda x: x[0])
+        end = time.time()
+        if Config.DEBUG:
+            print(
+                f"{Config.DEBUG_PREFIX} Best fuzzy match for query '{query}' is '{best_key}' with ratio {best_match:.1f} in {end - start:.4f} seconds"
+            )
+        if best_match >= 79:
+            return best_key
+
+        # Fallback to Levenshtein distance matching as a last resort
         threshold_ratio = 0.6 if len(query) < 15 else 0.3
         min_distance = float("inf")
         best_match = None
@@ -231,12 +250,25 @@ class ModelCostManager:
         end = time.time()
         if Config.DEBUG:
             print(
-                f"{Config.DEBUG_PREFIX} Levenshtein distance search took {end - start:.3f} seconds"
+                f"{Config.DEBUG_PREFIX} Levenshtein min. distance was {min_distance}. Search took {end - start:.3f} seconds"
             )
-        if min_distance > threshold:
-            return None  # No match found within the threshold
 
-        return best_match
+        if min_distance <= threshold:
+            return best_match
+
+        # Final fallback: try fuzz.partial_ratio
+        start = time.time()
+        partial_ratios = [(fuzz.partial_ratio(key, query_lower), key) for key in keys_lower]
+        best_ratio, best_key = max(partial_ratios, key=lambda x: x[0])
+        end = time.time()
+        if Config.DEBUG:
+            print(
+                f"{Config.DEBUG_PREFIX} Best partial ratio match for query '{query}' is '{best_key}' with ratio {best_ratio:.1f} in {end - start:.4f} seconds"
+            )
+        if best_ratio >= 80:  # Threshold for partial ratio
+            return best_key
+
+        return None
 
     def get_model_data(self, model):
         json_data = self.get_cost_data()
@@ -332,9 +364,10 @@ class Filter:
             str: sanitized model name
         """
         prefixes = [
-            "openai",
-            "github",
-            "google_genai",
+            "openai/",
+            "github/",
+            "google_genai/",
+            "deepseek/"
         ]
         suffixes = ["-tuned"]
         # remove prefixes and suffixes
@@ -441,18 +474,18 @@ class Filter:
         if __user__:
             if "email" in __user__:
                 user_email = __user__["email"]
+                try:
+                    self.user_cost_manager.update_user_cost(
+                        user_email,
+                        model,
+                        self.input_tokens,
+                        output_tokens,
+                        total_cost,
+                    )
+                except Exception as _:
+                    print("**ERROR: Unable to update user cost file!")
             else:
                 print("**ERROR: User email not found!")
-            try:
-                self.user_cost_manager.update_user_cost(
-                    user_email,
-                    model,
-                    self.input_tokens,
-                    output_tokens,
-                    total_cost,
-                )
-            except Exception as _:
-                print("**ERROR: Unable to update user cost file!")
         else:
             print("**ERROR: User not found!")
 
