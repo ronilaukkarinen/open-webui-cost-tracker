@@ -99,7 +99,7 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
         month_data_models_tokens,
         x="model",
         y="total_tokens",
-        title=f"Total Tokens Used for {month} by Model",
+        title=f"Top 10 Total Tokens Used by Model ({month})",
     )
     st.plotly_chart(fig_models_tokens, use_container_width=True)
 
@@ -116,7 +116,7 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
         month_data_models_cost,
         x="model",
         y="total_cost",
-        title=f"Total Cost for {month} by Model",
+        title=f"Top 10 Total Cost by Model ({month})",
     )
     st.plotly_chart(fig_models_cost, use_container_width=True)
 
@@ -135,7 +135,7 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
         ]
     )
     fig_users = px.bar(
-        month_data_users, x="user", y="total_cost", title=f"Cost for {month} by User"
+        month_data_users, x="user", y="total_cost", title=f"Total Cost by User ({month})"
     )
     st.plotly_chart(fig_users, use_container_width=True)
 
@@ -173,19 +173,16 @@ def main():
 
     file = st.file_uploader("Upload a JSON file", type=["json"])
 
-    if st.button("Process Data"):
-        plot_data(processed_data, month)
-
     if file is not None:
         data = load_data(file)
         if data is not None:
             processed_data = process_data(data)
             months = processed_data["month"].unique()
             month = st.sidebar.selectbox("Select a month", months)
+            if st.button("Process Data"):
+                plot_data(processed_data, month)
             if st.sidebar.button("Plot Data"):
                 plot_data(processed_data, month)
-
-
 
 if __name__ == "__main__":
     main()
