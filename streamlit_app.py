@@ -181,7 +181,7 @@ def main():
             if st.sidebar.button("Plot Data"):
                 plot_data(processed_data, month)
 
-    if st.button("Plot Data"):
+    if st.button("Process Data"):
         plot_data(processed_data, month)
 
 if __name__ == "__main__":
