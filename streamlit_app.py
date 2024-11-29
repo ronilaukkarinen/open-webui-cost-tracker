@@ -5,13 +5,13 @@ This Streamlit application processes and visualizes cost data from a JSON file.
 It generates plots for total tokens used and total costs by model and user.
 
 Author: bgeneto
-Version: 0.2.0
+Version: 0.2.1
 Date: 2024-11-29
 """
 
 import datetime
 import json
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import plotly.express as px
