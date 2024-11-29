@@ -154,13 +154,17 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
 
 
 def main():
-    st.set_page_config(layout="wide")
-    st.title("Open Webui")
-    st.subheader("Cost Tracker App", divider=False)
+    st.set_page_config(page_title="Cost Tracker App", page_icon="💵")
+    st.title("Cost Tracker for Open WebUI")
+    st.divider()
     st.page_link(
         "https://github.com/bgeneto/open-webui-cost-tracker/",
-        label="App Home",
+        label="GitHub Page",
         icon="🏠",
+    )
+    st.sidebar.title("⚙️ Options")
+    st.info(
+        "This Streamlit app processes and visualizes cost data from a JSON file. Select a JSON file below and a month to plot the data."
     )
     file = st.file_uploader("Upload a JSON file", type=["json"])
     if file is not None:
@@ -168,8 +172,8 @@ def main():
         if data is not None:
             processed_data = process_data(data)
             months = processed_data["month"].unique()
-            month = st.selectbox("Select a month", months)
-            if st.button("Plot Data"):
+            month = st.sidebar.selectbox("Select a month", months)
+            if st.sidebar.button("Plot Data"):
                 plot_data(processed_data, month)
 
 
