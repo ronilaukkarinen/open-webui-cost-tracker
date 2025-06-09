@@ -1,10 +1,10 @@
-# open-webui-cost-tracker
+# Time Token And Cost Tracker
 
 This open-webui function is designed to manage and calculate the costs associated with user interactions with models in a Open WebUI appliance.
+
 The number of (input and output) tokens, price and other metrics are shown in the message status area of Open Webui interface. This status appear right above the message content (see Fig. below)
 
 ![image](https://github.com/user-attachments/assets/1d7a975b-84b2-4af1-93b3-2bfb3363f575)
-
 
 ![image](https://github.com/user-attachments/assets/ad373135-9ead-465f-adb1-d10f6262a705)
 
