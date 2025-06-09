@@ -1,3 +1,40 @@
+### 1.2.1: 2025-01-09
+
+* Remove non-existent `__model__` parameter from filter function signatures per Open WebUI documentation
+* Fix local model detection to work with model name patterns instead of non-existent server metadata
+* Update detection logic to identify Ollama and local models based on naming conventions
+
+### 1.2.0: 2025-01-27
+
+* Improve local model detection to focus on serving infrastructure instead of model names
+* Detect local inference engines (Ollama, LocalAI, LlamaCpp, KoboldCpp, etc.) in base_url
+* Check model metadata for Ollama and other local indicators
+* More conservative approach - only skip cost tracking for clearly local models
+* Remove unreliable pricing-based detection that caused false positives
+
+### 1.1.1: 2025-01-27
+
+* Increase fallback timeout from 1 second to 5 seconds for non-streaming models
+
+### 1.1.0: 2025-01-27
+
+* Add proper stream hook to detect when AI starts streaming responses
+* Processing message now disappears immediately when streaming begins (not timeout-based)
+* Use stream() function to cancel timeout task when first stream chunk arrives
+* Keep fallback timeout for edge cases where streaming doesn't occur
+
+### 1.0.2: 2025-01-27
+
+* Fix processing message timeout to 1 second (was incorrectly trying to detect streaming)
+* Remove outlet-based cancellation logic (outlet runs after streaming, not during)
+* Processing message now disappears after 1 second since token counting is nearly instant
+
+### 1.0.1: 2025-01-27
+
+* Detect when AI starts responding and immediately hide "Processing X input tokens..." message
+* Cancel timeout task when outlet function begins (response has started)
+* Much more responsive UX - message disappears as soon as streaming begins
+
 ### 1.0.0: 2025-01-27
 
 * 🎉 **Major Release**: Smart local model detection for cost tracking
@@ -10,7 +47,6 @@
 * Automatic detection works for Ollama, local inference servers, and other self-hosted models
 * Configurable via valve - can be disabled to track all models
 * Clean up status message format for local models
-* Remove "(local model)" text from status display
 
 ### 0.4.0: 2025-01-27
 

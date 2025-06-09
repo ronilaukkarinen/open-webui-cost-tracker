@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.0.1
+version: 1.2.1
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -378,6 +378,7 @@ class Filter:
         )
         self.start_time = None
         self.input_tokens = 0
+        self.processing_task = None
         pass
 
     def _sanitize_model_name(self, name: str) -> str:
@@ -412,65 +413,70 @@ class Filter:
             return self._sanitize_model_name(body["model"])
         return None
 
-    def _is_local_model(self, model: str, __model__: Optional[dict] = None) -> bool:
+    def _is_local_model(self, model: str, body: Optional[dict] = None) -> bool:
         """
-        Detect if a model is local/free by checking multiple indicators
+        Detect if a model is local/free by checking model name patterns and known local indicators
         Args:
             model (str): model name
-            __model__ (dict): model metadata from Open WebUI
+            body (dict): request body which may contain model metadata
         Returns:
             bool: True if model is detected as local/free
         """
         if not model:
             return True
 
-        # Method 1: Check model metadata for local indicators
-        if __model__:
-            # Check if base_url indicates local hosting
-            base_url = __model__.get("base_url", "").lower()
-            if any(indicator in base_url for indicator in [
-                "localhost", "127.0.0.1", "0.0.0.0", "::1",
-                "192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-                "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31."
-            ]):
+        model_lower = model.lower()
+
+        # Check for common local model indicators in the model name
+        local_model_indicators = [
+            # Ollama models (typically just model name without provider prefix)
+            "llama", "mistral", "qwen", "gemma", "phi", "codellama", "vicuna", 
+            "alpaca", "wizard", "orca", "nous", "dolphin", "neural", "chat",
+            
+            # Local model naming patterns
+            ":latest", ":8b", ":7b", ":13b", ":70b", ":32b", ":1b", ":3b",
+            
+            # Local inference engines
+            "ollama", "localai", "llamacpp", "koboldcpp", "textgen", "oobabooga"
+        ]
+        
+        # If model name contains any local indicators, it's likely local
+        if any(indicator in model_lower for indicator in local_model_indicators):
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Local model indicator detected in name: {model}")
+            return True
+        
+        # Check if the model name lacks a provider prefix (OpenRouter models usually have prefixes)
+        # External/paid models typically have formats like:
+        # - "openai/gpt-4", "anthropic/claude-3", "google/gemini-pro"
+        # - "meta-llama/llama-3.1-405b-instruct"
+        # Local models typically just have the model name like:
+        # - "llama3.1", "mistral", "qwen2:7b"
+        
+        # If it contains a slash, it's likely an external model with a provider
+        if "/" in model:
+            # But check if it's still a local setup (some local setups use provider/model format)
+            provider = model.split("/")[0].lower()
+            local_providers = ["local", "ollama", "llamacpp", "localai"]
+            if provider in local_providers:
                 if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Detected local model via base_url: {model} ({base_url})")
+                    print(f"{Config.DEBUG_PREFIX} Local provider detected: {model}")
                 return True
             
-            # Check if it's explicitly marked as local
-            if __model__.get("local", False):
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Model explicitly marked as local: {model}")
-                return True
-
-        # Method 2: Try to get pricing data - if no pricing exists, likely local
-        try:
-            model_pricing_data = self.model_cost_manager.get_model_data(model)
-            if not model_pricing_data:
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} No pricing data found for model: {model}, treating as local")
-                return True
-                
-            # Method 3: Check if both costs are exactly zero (free tier or local)
-            input_cost = model_pricing_data.get("input_cost_per_token", 0)
-            output_cost = model_pricing_data.get("output_cost_per_token", 0)
-            if input_cost == 0 and output_cost == 0:
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Zero cost model detected: {model}")
-                return True
-        except Exception as e:
+            # External provider detected
             if Config.DEBUG:
-                print(f"{Config.DEBUG_PREFIX} Error checking pricing for {model}: {e}, treating as local")
-            return True
-
-        return False
+                print(f"{Config.DEBUG_PREFIX} External provider detected: {model}")
+            return False
+        
+        # Simple model names without slashes are typically local Ollama models
+        if Config.DEBUG:
+            print(f"{Config.DEBUG_PREFIX} Simple model name detected (likely local): {model}")
+        return True
 
     async def inlet(
         self,
         body: dict,
         __event_emitter__: Callable[[Any], Awaitable[None]] = None,
-        __model__: Optional[dict] = None,
         __user__: Optional[dict] = None,
     ) -> dict:
 
@@ -517,10 +523,10 @@ class Filter:
             }
         )
 
-        # Auto-hide the processing message after 3 seconds (input processing should be fast)
+        # Auto-hide the processing message after 5 seconds as fallback (for non-streaming models)
         async def hide_processing_message():
             try:
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
                 await __event_emitter__(
                     {
                         "type": "status",
@@ -530,11 +536,14 @@ class Filter:
                         },
                     }
                 )
+            except asyncio.CancelledError:
+                # Task was cancelled by stream hook - this is expected
+                pass
             except Exception:
-                pass  # Ignore errors if the task is cancelled or event_emitter fails
+                pass  # Ignore errors if event_emitter fails
         
-        # Start the timeout task but don't await it
-        asyncio.create_task(hide_processing_message())
+        # Store the timeout task so we can cancel it when streaming starts
+        self.processing_task = asyncio.create_task(hide_processing_message())
 
         # add user email to payload in order to track costs
         if __user__:
@@ -549,13 +558,26 @@ class Filter:
 
         return body
 
+    def stream(self, event: dict) -> dict:
+        """
+        Stream hook - called when AI starts streaming response chunks
+        This is where we detect actual streaming start and hide processing message
+        """
+        # Cancel the processing message as soon as first stream chunk arrives
+        if self.processing_task and not self.processing_task.done():
+            self.processing_task.cancel()
+            
+        # Just pass through the stream event unchanged
+        return event
+
     async def outlet(
         self,
         body: dict,
         __event_emitter__: Callable[[Any], Awaitable[None]],
-        __model__: Optional[dict] = None,
         __user__: Optional[dict] = None,
     ) -> dict:
+
+
 
         end_time = time.time()
         elapsed_time = end_time - self.start_time
@@ -601,7 +623,7 @@ class Filter:
             output_tokens = 0
 
         # Check if this is a local model and skip cost calculation if enabled
-        if self.valves.skip_free_models and self._is_local_model(model, __model__):
+        if self.valves.skip_free_models and self._is_local_model(model, body):
             tokens = self.input_tokens + output_tokens
             
             # For local models, just show time and tokens without cost
