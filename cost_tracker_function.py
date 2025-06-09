@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 0.3.8
+version: 0.4.0
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -13,6 +13,7 @@ disclaimer: This function is provided as is without any guarantees.
             All metrics and costs are approximate and may vary depending on the model and the usage.
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -346,6 +347,10 @@ class Filter:
             default=True,
             description="Use natural language format like '8 seconds, 3395 tokens and 0 € used'",
         )
+        hide_zero_cost: bool = Field(
+            default=True,
+            description="Hide cost display when cost is zero (show only time and tokens)",
+        )
         # Old format options (disabled by default)
         elapsed_time: bool = Field(
             default=False, description="Display the elapsed time (old format)"
@@ -453,6 +458,25 @@ class Filter:
                 },
             }
         )
+
+        # Auto-hide the processing message after 30 seconds to prevent it from getting stuck
+        async def hide_processing_message():
+            try:
+                await asyncio.sleep(30)
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": f"Processing {self.input_tokens} input tokens...",
+                            "done": True,
+                        },
+                    }
+                )
+            except Exception:
+                pass  # Ignore errors if the task is cancelled or event_emitter fails
+        
+        # Start the timeout task but don't await it
+        asyncio.create_task(hide_processing_message())
 
         # add user email to payload in order to track costs
         if __user__:
@@ -583,7 +607,10 @@ class Filter:
         if self.valves.use_natural_format:
             # Natural language format: "8 seconds, 3395 tokens and 0 € used"
             elapsed_seconds = int(round(elapsed_time))
-            stats = f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
+            if self.valves.hide_zero_cost and total_cost_eur == 0:
+                stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
+            else:
+                stats = f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
 
         await __event_emitter__(
             {"type": "status", "data": {"description": stats, "done": True}}
