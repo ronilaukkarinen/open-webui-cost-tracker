@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 0.4.0
+version: 1.0.1
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -351,6 +351,10 @@ class Filter:
             default=True,
             description="Hide cost display when cost is zero (show only time and tokens)",
         )
+        skip_free_models: bool = Field(
+            default=True,
+            description="Skip cost tracking for local/free models (models without OpenRouter pricing)",
+        )
         # Old format options (disabled by default)
         elapsed_time: bool = Field(
             default=False, description="Display the elapsed time (old format)"
@@ -408,6 +412,60 @@ class Filter:
             return self._sanitize_model_name(body["model"])
         return None
 
+    def _is_local_model(self, model: str, __model__: Optional[dict] = None) -> bool:
+        """
+        Detect if a model is local/free by checking multiple indicators
+        Args:
+            model (str): model name
+            __model__ (dict): model metadata from Open WebUI
+        Returns:
+            bool: True if model is detected as local/free
+        """
+        if not model:
+            return True
+
+        # Method 1: Check model metadata for local indicators
+        if __model__:
+            # Check if base_url indicates local hosting
+            base_url = __model__.get("base_url", "").lower()
+            if any(indicator in base_url for indicator in [
+                "localhost", "127.0.0.1", "0.0.0.0", "::1",
+                "192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31."
+            ]):
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Detected local model via base_url: {model} ({base_url})")
+                return True
+            
+            # Check if it's explicitly marked as local
+            if __model__.get("local", False):
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Model explicitly marked as local: {model}")
+                return True
+
+        # Method 2: Try to get pricing data - if no pricing exists, likely local
+        try:
+            model_pricing_data = self.model_cost_manager.get_model_data(model)
+            if not model_pricing_data:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} No pricing data found for model: {model}, treating as local")
+                return True
+                
+            # Method 3: Check if both costs are exactly zero (free tier or local)
+            input_cost = model_pricing_data.get("input_cost_per_token", 0)
+            output_cost = model_pricing_data.get("output_cost_per_token", 0)
+            if input_cost == 0 and output_cost == 0:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Zero cost model detected: {model}")
+                return True
+        except Exception as e:
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Error checking pricing for {model}: {e}, treating as local")
+            return True
+
+        return False
+
     async def inlet(
         self,
         body: dict,
@@ -459,10 +517,10 @@ class Filter:
             }
         )
 
-        # Auto-hide the processing message after 30 seconds to prevent it from getting stuck
+        # Auto-hide the processing message after 3 seconds (input processing should be fast)
         async def hide_processing_message():
             try:
-                await asyncio.sleep(30)
+                await asyncio.sleep(3)
                 await __event_emitter__(
                     {
                         "type": "status",
@@ -541,6 +599,19 @@ class Filter:
                 print(f"{Config.DEBUG_PREFIX} Error processing output tokens: {e}")
             # Fallback to zero if everything fails
             output_tokens = 0
+
+        # Check if this is a local model and skip cost calculation if enabled
+        if self.valves.skip_free_models and self._is_local_model(model, __model__):
+            tokens = self.input_tokens + output_tokens
+            
+            # For local models, just show time and tokens without cost
+            elapsed_seconds = int(round(elapsed_time))
+            stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
+            
+            await __event_emitter__(
+                {"type": "status", "data": {"description": stats, "done": True}}
+            )
+            return body
 
         await __event_emitter__(
             {
