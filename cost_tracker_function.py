@@ -1,10 +1,10 @@
 """
-title: Cost Tracker for Open WebUI
-description: This function is designed to manage and calculate the costs associated with user interactions and model usage in a Open WebUI.
-author: bgeneto
-author_url: https://github.com/bgeneto/open-webui-cost-tracker
-funding_url: https://github.com/open-webui
-version: 0.3.0
+title: Time Token And Cost Tracker
+description: This function is designed to manage and calculate the costs associated with user interactions and model usage in a Open WebUI based on OpenRouters pricings. See https://github.com/bgeneto/open-webui-cost-tracker & https://openwebui.com/f/makimaki/cost_tracker/edit
+author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
+author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
+funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
+version: 0.3.8
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -27,21 +27,17 @@ import tiktoken
 from cachetools import TTLCache, cached
 from open_webui.utils.misc import get_last_assistant_message, get_messages_content
 from pydantic import BaseModel, Field
-from rapidfuzz import fuzz
 
 
 class Config:
     DATA_DIR = "data"
     CACHE_DIR = os.path.join(DATA_DIR, ".cache")
-    USER_COST_FILE = os.path.join(
-        DATA_DIR,
-        f"costs-{datetime.now().year:04d}-{datetime.now().month:02d}.json"
-    )
+    USER_COST_FILE = os.path.join(DATA_DIR, f"costs-{datetime.now().year}.json")
     CACHE_TTL = 432000  # try to keep model pricing json file for 5 days in the cache.
     CACHE_MAXSIZE = 16
     DECIMALS = "0.00000001"
-    DEBUG_PREFIX = "DEBUG:    " + __name__.upper() + " -"
-    INFO_PREFIX = "INFO:     " + __name__.upper() + " -"
+    DEBUG_PREFIX = "DEBUG:    " + __name__ + " -"
+    INFO_PREFIX = "INFO:     " + __name__ + " -"
     DEBUG = False
 
 
@@ -79,33 +75,30 @@ class UserCostManager:
             json.dump(costs, cost_file, indent=4)
 
     def update_user_cost(
-            self,
-            user_email: str,
-            model: str,
-            input_tokens: int,
-            output_tokens: int,
-            total_cost: Decimal,
-        ):
-            costs = self._read_costs()
-            timestamp = datetime.now().isoformat()
+        self,
+        user_email: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_cost: Decimal,
+    ):
+        costs = self._read_costs()
+        timestamp = datetime.now().isoformat()
 
-            # Ensure costs is a list
-            if not isinstance(costs, list):
-                costs = []
+        if user_email not in costs:
+            costs[user_email] = []
 
-            # Add new usage record directly to list
-            costs.append(
-                {
-                    "user": user_email,
-                    "model": model,
-                    "timestamp": timestamp,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_cost": str(total_cost),
-                }
-            )
+        costs[user_email].append(
+            {
+                "model": model,
+                "timestamp": timestamp,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_cost": str(total_cost),
+            }
+        )
 
-            self._write_costs(costs)
+        self._write_costs(costs)
 
 
 class ModelCostManager:
@@ -114,7 +107,9 @@ class ModelCostManager:
     def __init__(self, cache_dir=Config.CACHE_DIR):
         self.cache_dir = cache_dir
         self.lock = Lock()
-        self.url = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+        self.url = (
+            "https://openrouter.ai/api/v1/models"  # Changed URL to OpenRouter API
+        )
         self.cache_file_path = self._get_cache_filename()
         self._ensure_cache_dir()
 
@@ -133,20 +128,8 @@ class ModelCostManager:
     @cached(cache=cache)
     def get_cost_data(self):
         """
-        Fetches a JSON file from a URL and stores it in cache.
-
-        This method attempts to retrieve a JSON file from the specified URL. To optimize performance and reduce
-        network requests, it caches the JSON data locally. If the cached data is available and still valid,
-        it returns the cached data instead of making a new network request. If the cached data is not available
-        or has expired, it fetches the data from the URL, caches it, and then returns it.
-
-        Returns:
-            dict: The JSON data retrieved from the URL or the cache.
-
-        Raises:
-            requests.RequestException: If the network request fails and no valid cache is available.
+        Fetches model pricing data from OpenRouter API and transforms it into the required format.
         """
-
         with self.lock:
             if os.path.exists(self.cache_file_path) and self._is_cache_valid(
                 self.cache_file_path
@@ -162,7 +145,21 @@ class ModelCostManager:
                 print(f"{Config.DEBUG_PREFIX} Downloading model costs json file!")
             response = requests.get(self.url)
             response.raise_for_status()
-            data = response.json()
+            raw_data = response.json()
+
+            # Transform OpenRouter data format to match expected format
+            transformed_data = {}
+            for model in raw_data["data"]:
+                model_id = model[
+                    "id"
+                ].lower()  # Ensure lowercase for consistent matching
+                transformed_data[model_id] = {
+                    "input_cost_per_token": float(model["pricing"]["prompt"]),
+                    "output_cost_per_token": float(model["pricing"]["completion"]),
+                    "context_window": model["context_length"],
+                }
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Added pricing for model: {model_id}")
 
             # backup existing cache file
             try:
@@ -175,9 +172,9 @@ class ModelCostManager:
                 with open(self.cache_file_path, "w", encoding="UTF-8") as cache_file:
                     if Config.DEBUG:
                         print(f"{Config.DEBUG_PREFIX} Writing costs to json file!")
-                    json.dump(data, cache_file)
+                    json.dump(transformed_data, cache_file, indent=2)
+            return transformed_data
 
-            return data
         except Exception as e:
             print(
                 f"**ERROR: Failed to download or write to costs json file. Using old cached file if available. Error: {e}"
@@ -214,26 +211,23 @@ class ModelCostManager:
         return dp[m][n]
 
     def _find_best_match(self, query: str, json_data) -> str:
-        # Exact match search
         query_lower = query.lower()
         keys_lower = {key.lower(): key for key in json_data.keys()}
 
+        # 1. 完全一致を確認
         if query_lower in keys_lower:
             return keys_lower[query_lower]
 
-        # If no exact match is found, try fuzzy partial matching
-        start = time.time()
-        partial_ratios = [(fuzz.ratio(key, query_lower), key) for key in keys_lower]
-        best_match, best_key = max(partial_ratios, key=lambda x: x[0])
-        end = time.time()
-        if Config.DEBUG:
-            print(
-                f"{Config.DEBUG_PREFIX} Best fuzzy match for query '{query}' is '{best_key}' with ratio {best_match:.1f} in {end - start:.4f} seconds"
-            )
-        if best_match >= 79:
-            return best_key
+        # 2. 後方一致を確認
+        for key_lower, original_key in keys_lower.items():
+            if query_lower.endswith(key_lower):
+                if Config.DEBUG:
+                    print(
+                        f"{Config.DEBUG_PREFIX} Found suffix match: {original_key} for query {query}"
+                    )
+                return original_key
 
-        # Fallback to Levenshtein distance matching as a last resort
+        # 3. Levenshtein距離によるフォールバック
         threshold_ratio = 0.6 if len(query) < 15 else 0.3
         min_distance = float("inf")
         best_match = None
@@ -245,55 +239,70 @@ class ModelCostManager:
             if dist < min_distance:
                 min_distance = dist
                 best_match = key
-            if dist < 2:  # Early termination for (almost) exact match
+            if dist < 2:  # ほぼ完全一致の場合の早期終了
                 return key
         end = time.time()
+
         if Config.DEBUG:
             print(
-                f"{Config.DEBUG_PREFIX} Levenshtein min. distance was {min_distance}. Search took {end - start:.3f} seconds"
+                f"{Config.DEBUG_PREFIX} Levenshtein distance search took {end - start:.3f} seconds"
             )
 
-        if min_distance <= threshold:
-            return best_match
+        if min_distance > threshold:
+            return None  # しきい値内に一致するものが見つからなかった
 
-        # Final fallback: try fuzz.partial_ratio
-        start = time.time()
-        partial_ratios = [(fuzz.partial_ratio(key, query_lower), key) for key in keys_lower]
-        best_ratio, best_key = max(partial_ratios, key=lambda x: x[0])
-        end = time.time()
-        if Config.DEBUG:
-            print(
-                f"{Config.DEBUG_PREFIX} Best partial ratio match for query '{query}' is '{best_key}' with ratio {best_ratio:.1f} in {end - start:.4f} seconds"
-            )
-        if best_ratio >= 80:  # Threshold for partial ratio
-            return best_key
+        return best_match
 
-        return None
+    def _sanitize_model_name(self, name: str) -> str:
+        """
+        Keep the full model identifier for OpenRouter API matching
+        Args:
+            name (str): model name
+        Returns:
+            str: sanitized model name
+        """
+        # Remove only specific suffixes but keep the provider prefix
+        suffixes = ["-tuned"]
+        name = name.lower().strip()
+        for suffix in suffixes:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+        return name
 
     def get_model_data(self, model):
+        if not model:
+            return {}
+
+        model = self._sanitize_model_name(model)
         json_data = self.get_cost_data()
 
+        # Direct match first
+        if model in json_data:
+            return json_data[model]
+
+        # Try finding in cache
         if model in ModelCostManager._best_match_cache:
             if Config.DEBUG:
                 print(
                     f"{Config.DEBUG_PREFIX} Using cached costs for model named '{model}'"
                 )
-            best_match = ModelCostManager._best_match_cache[model]
-        else:
-            if Config.DEBUG:
-                print(
-                    f"{Config.DEBUG_PREFIX} Searching best match in costs file for model named '{model}'"
-                )
-            best_match = self._find_best_match(model, json_data)
-            ModelCostManager._best_match_cache[model] = best_match
+            cached_match = ModelCostManager._best_match_cache[model]
+            return json_data.get(cached_match, {})
 
-        if best_match is None:
-            return {}
-
+        # Find best match
         if Config.DEBUG:
-            print(f"{Config.DEBUG_PREFIX} Using costs from '{best_match}'")
+            print(
+                f"{Config.DEBUG_PREFIX} Searching best match in costs file for model named '{model}'"
+            )
 
-        return json_data.get(best_match, {})
+        # Look for partial matches in model IDs
+        for model_id in json_data.keys():
+            if model in model_id or model_id in model:
+                ModelCostManager._best_match_cache[model] = model_id
+                return json_data[model_id]
+
+        print(f"{Config.INFO_PREFIX} Model '{model}' not found in costs json file!")
+        return {}
 
 
 class CostCalculator:
@@ -332,12 +341,20 @@ class Filter:
         compensation: float = Field(
             default=1.0, description="Compensation for price calculation (percent)"
         )
-        elapsed_time: bool = Field(default=True, description="Display the elapsed time")
+        # New natural language format (enabled by default)
+        use_natural_format: bool = Field(
+            default=True,
+            description="Use natural language format like '8 seconds, 3395 tokens and 0 € used'",
+        )
+        # Old format options (disabled by default)
+        elapsed_time: bool = Field(
+            default=False, description="Display the elapsed time (old format)"
+        )
         number_of_tokens: bool = Field(
-            default=True, description="Display total number of tokens"
+            default=False, description="Display total number of tokens (old format)"
         )
         tokens_per_sec: bool = Field(
-            default=True, description="Display tokens per second metric"
+            default=False, description="Display tokens per second metric (old format)"
         )
         debug: bool = Field(default=False, description="Display debugging messages")
         pass
@@ -355,29 +372,18 @@ class Filter:
         pass
 
     def _sanitize_model_name(self, name: str) -> str:
-        """Sanitize model name by removing prefixes and suffixes
-
+        """Sanitize model name while preserving provider prefix
         Args:
             name (str): model name
-
         Returns:
             str: sanitized model name
         """
-        prefixes = [
-            "openai/",
-            "github/",
-            "google_genai/",
-            "deepseek/"
-        ]
         suffixes = ["-tuned"]
-        # remove prefixes and suffixes
-        for prefix in prefixes:
-            if name.startswith(prefix):
-                name = name[len(prefix) :]
+        name = name.lower().strip()
         for suffix in suffixes:
             if name.endswith(suffix):
                 name = name[: -len(suffix)]
-        return name.lower().strip()
+        return name
 
     def _remove_roles(self, content):
         # Define the roles to be removed
@@ -406,11 +412,37 @@ class Filter:
     ) -> dict:
 
         Config.DEBUG = self.valves.debug
-        enc = tiktoken.get_encoding("cl100k_base")
-        input_content = self._remove_roles(
-            get_messages_content(body["messages"])
-        ).strip()
-        self.input_tokens = len(enc.encode(input_content))
+
+        try:
+            # Get input content with safety checks
+            input_content = self._remove_roles(
+                get_messages_content(body["messages"])
+            ).strip()
+
+            # Limit content size to prevent hanging (5MB max)
+            max_content_size = 5 * 1024 * 1024  # 5MB
+            if len(input_content) > max_content_size:
+                if Config.DEBUG:
+                    print(
+                        f"{Config.DEBUG_PREFIX} Content too large ({len(input_content)} chars), truncating for token count"
+                    )
+                input_content = input_content[:max_content_size]
+
+            # Safe token counting with fallback
+            try:
+                enc = tiktoken.get_encoding("cl100k_base")
+                self.input_tokens = len(enc.encode(input_content))
+            except Exception as e:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Token encoding failed: {e}")
+                # Fallback: approximate token count (1.3 tokens per word)
+                self.input_tokens = int(len(input_content.split()) * 1.3)
+
+        except Exception as e:
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Error processing input: {e}")
+            # Fallback to zero tokens if everything fails
+            self.input_tokens = 0
 
         await __event_emitter__(
             {
@@ -457,8 +489,34 @@ class Filter:
         )
 
         model = self._get_model(body)
-        enc = tiktoken.get_encoding("cl100k_base")
-        output_tokens = len(enc.encode(get_last_assistant_message(body["messages"])))
+
+        # Safe output token counting
+        try:
+            output_content = get_last_assistant_message(body["messages"])
+
+            # Limit content size to prevent hanging
+            max_content_size = 5 * 1024 * 1024  # 5MB
+            if len(output_content) > max_content_size:
+                if Config.DEBUG:
+                    print(
+                        f"{Config.DEBUG_PREFIX} Output content too large ({len(output_content)} chars), truncating for token count"
+                    )
+                output_content = output_content[:max_content_size]
+
+            try:
+                enc = tiktoken.get_encoding("cl100k_base")
+                output_tokens = len(enc.encode(output_content))
+            except Exception as e:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Output token encoding failed: {e}")
+                # Fallback: approximate token count
+                output_tokens = int(len(output_content.split()) * 1.3)
+
+        except Exception as e:
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Error processing output tokens: {e}")
+            # Fallback to zero if everything fails
+            output_tokens = 0
 
         await __event_emitter__(
             {
@@ -474,38 +532,58 @@ class Filter:
         if __user__:
             if "email" in __user__:
                 user_email = __user__["email"]
-                try:
-                    self.user_cost_manager.update_user_cost(
-                        user_email,
-                        model,
-                        self.input_tokens,
-                        output_tokens,
-                        total_cost,
-                    )
-                except Exception as _:
-                    print("**ERROR: Unable to update user cost file!")
             else:
                 print("**ERROR: User email not found!")
+            try:
+                self.user_cost_manager.update_user_cost(
+                    user_email,
+                    model,
+                    self.input_tokens,
+                    output_tokens,
+                    total_cost,
+                )
+            except Exception as _:
+                print("**ERROR: Unable to update user cost file!")
         else:
             print("**ERROR: User not found!")
 
         tokens = self.input_tokens + output_tokens
         tokens_per_sec = tokens / elapsed_time
-        stats_array = []
 
-        if self.valves.elapsed_time:
-            stats_array.append(f"{elapsed_time:.2f} s")
-        if self.valves.tokens_per_sec:
-            stats_array.append(f"{tokens_per_sec:.2f} T/s")
-        if self.valves.number_of_tokens:
-            stats_array.append(f"{tokens} Tokens")
+        # Convert USD to EUR (approximate rate: 1 USD = 0.93 EUR)
+        total_cost_eur = float(total_cost) * 0.93
 
-        if float(total_cost) < float(Config.DECIMALS):
-            stats_array.append(f"${total_cost:.2f}")
-        else:
-            stats_array.append(f"${total_cost:.6f}")
+        # Smart euro formatting
+        def format_euros(cost_eur):
+            if cost_eur == 0:
+                return "0 €"
+            elif cost_eur < 0.0001:
+                return "0 €"  # Treat very tiny costs as free
+            elif cost_eur >= 0.98 and cost_eur <= 1.02:
+                return "1 €"  # Round near 1 euro
+            elif cost_eur >= 1.98 and cost_eur <= 2.02:
+                return "2 €"  # Round near 2 euros
+            elif cost_eur >= 2.98 and cost_eur <= 3.02:
+                return "3 €"  # Round near 3 euros
+            elif cost_eur >= 3.98 and cost_eur <= 4.02:
+                return "4 €"  # Round near 4 euros
+            elif cost_eur >= 4.98 and cost_eur <= 5.02:
+                return "5 €"  # Round near 5 euros
+            elif cost_eur >= 1:
+                return f"{cost_eur:.0f} €"  # Round whole euros for larger amounts
+            else:
+                # For small costs, show meaningful decimals
+                if cost_eur >= 0.01:
+                    return f"{cost_eur:.3f} €"
+                else:
+                    return f"{cost_eur:.6f} €"
 
-        stats = " | ".join(stats_array)
+        cost_str = format_euros(total_cost_eur)
+
+        if self.valves.use_natural_format:
+            # Natural language format: "8 seconds, 3395 tokens and 0 € used"
+            elapsed_seconds = int(round(elapsed_time))
+            stats = f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
 
         await __event_emitter__(
             {"type": "status", "data": {"description": stats, "done": True}}
