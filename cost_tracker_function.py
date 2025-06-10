@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.1
+version: 1.2.3
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -430,29 +430,53 @@ class Filter:
         # Check for common local model indicators in the model name
         local_model_indicators = [
             # Ollama models (typically just model name without provider prefix)
-            "llama", "mistral", "qwen", "gemma", "phi", "codellama", "vicuna", 
-            "alpaca", "wizard", "orca", "nous", "dolphin", "neural", "chat",
-            
+            "llama",
+            "mistral",
+            "qwen",
+            "gemma",
+            "phi",
+            "codellama",
+            "vicuna",
+            "alpaca",
+            "wizard",
+            "orca",
+            "nous",
+            "dolphin",
+            "neural",
+            "chat",
             # Local model naming patterns
-            ":latest", ":8b", ":7b", ":13b", ":70b", ":32b", ":1b", ":3b",
-            
+            ":latest",
+            ":8b",
+            ":7b",
+            ":13b",
+            ":70b",
+            ":32b",
+            ":1b",
+            ":3b",
             # Local inference engines
-            "ollama", "localai", "llamacpp", "koboldcpp", "textgen", "oobabooga"
+            "ollama",
+            "localai",
+            "llamacpp",
+            "koboldcpp",
+            "textgen",
+            "oobabooga",
         ]
-        
+
         # If model name contains any local indicators, it's likely local
         if any(indicator in model_lower for indicator in local_model_indicators):
             if Config.DEBUG:
-                print(f"{Config.DEBUG_PREFIX} Local model indicator detected in name: {model}")
+                print(
+                    f"{Config.DEBUG_PREFIX} Local model indicator detected in name: {model}"
+                )
             return True
-        
+
         # Check if the model name lacks a provider prefix (OpenRouter models usually have prefixes)
         # External/paid models typically have formats like:
         # - "openai/gpt-4", "anthropic/claude-3", "google/gemini-pro"
         # - "meta-llama/llama-3.1-405b-instruct"
         # Local models typically just have the model name like:
         # - "llama3.1", "mistral", "qwen2:7b"
-        
+
         # If it contains a slash, it's likely an external model with a provider
         if "/" in model:
             # But check if it's still a local setup (some local setups use provider/model format)
@@ -462,15 +486,17 @@ class Filter:
                 if Config.DEBUG:
                     print(f"{Config.DEBUG_PREFIX} Local provider detected: {model}")
                 return True
-            
+
             # External provider detected
             if Config.DEBUG:
                 print(f"{Config.DEBUG_PREFIX} External provider detected: {model}")
             return False
-        
+
         # Simple model names without slashes are typically local Ollama models
         if Config.DEBUG:
-            print(f"{Config.DEBUG_PREFIX} Simple model name detected (likely local): {model}")
+            print(
+                f"{Config.DEBUG_PREFIX} Simple model name detected (likely local): {model}"
+            )
         return True
 
     async def inlet(
@@ -483,10 +509,32 @@ class Filter:
         Config.DEBUG = self.valves.debug
 
         try:
-            # Get input content with safety checks
-            input_content = self._remove_roles(
-                get_messages_content(body["messages"])
-            ).strip()
+            # Get ALL message content including system prompts, user messages, etc.
+            all_content = []
+            for message in body.get("messages", []):
+                if isinstance(message, dict) and "content" in message:
+                    content = str(message["content"]).strip()
+                    if content:  # Only add non-empty content
+                        all_content.append(content)
+
+            # Join all message content
+            raw_content = "\n".join(all_content)
+            if Config.DEBUG:
+                print(
+                    f"{Config.DEBUG_PREFIX} Raw content from {len(all_content)} messages: {len(raw_content)} chars"
+                )
+                print(
+                    f"{Config.DEBUG_PREFIX} Raw content preview: {raw_content[:200]}..."
+                )
+
+            input_content = self._remove_roles(raw_content).strip()
+            if Config.DEBUG:
+                print(
+                    f"{Config.DEBUG_PREFIX} After role removal: {len(input_content)} chars"
+                )
+                print(
+                    f"{Config.DEBUG_PREFIX} Content preview: {input_content[:200]}..."
+                )
 
             # Limit content size to prevent hanging (5MB max)
             max_content_size = 5 * 1024 * 1024  # 5MB
@@ -501,11 +549,20 @@ class Filter:
             try:
                 enc = tiktoken.get_encoding("cl100k_base")
                 self.input_tokens = len(enc.encode(input_content))
+                if Config.DEBUG:
+                    print(
+                        f"{Config.DEBUG_PREFIX} Tiktoken encoding successful: {self.input_tokens} tokens"
+                    )
             except Exception as e:
                 if Config.DEBUG:
                     print(f"{Config.DEBUG_PREFIX} Token encoding failed: {e}")
                 # Fallback: approximate token count (1.3 tokens per word)
-                self.input_tokens = int(len(input_content.split()) * 1.3)
+                word_count = len(input_content.split())
+                self.input_tokens = int(word_count * 1.3)
+                if Config.DEBUG:
+                    print(
+                        f"{Config.DEBUG_PREFIX} Fallback word count: {word_count} words -> {self.input_tokens} tokens"
+                    )
 
         except Exception as e:
             if Config.DEBUG:
@@ -541,7 +598,7 @@ class Filter:
                 pass
             except Exception:
                 pass  # Ignore errors if event_emitter fails
-        
+
         # Store the timeout task so we can cancel it when streaming starts
         self.processing_task = asyncio.create_task(hide_processing_message())
 
@@ -566,7 +623,7 @@ class Filter:
         # Cancel the processing message as soon as first stream chunk arrives
         if self.processing_task and not self.processing_task.done():
             self.processing_task.cancel()
-            
+
         # Just pass through the stream event unchanged
         return event
 
@@ -576,8 +633,6 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
-
-
 
         end_time = time.time()
         elapsed_time = end_time - self.start_time
@@ -625,11 +680,11 @@ class Filter:
         # Check if this is a local model and skip cost calculation if enabled
         if self.valves.skip_free_models and self._is_local_model(model, body):
             tokens = self.input_tokens + output_tokens
-            
+
             # For local models, just show time and tokens without cost
             elapsed_seconds = int(round(elapsed_time))
             stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
-            
+
             await __event_emitter__(
                 {"type": "status", "data": {"description": stats, "done": True}}
             )
@@ -703,7 +758,9 @@ class Filter:
             if self.valves.hide_zero_cost and total_cost_eur == 0:
                 stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
             else:
-                stats = f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
+                stats = (
+                    f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
+                )
 
         await __event_emitter__(
             {"type": "status", "data": {"description": stats, "done": True}}

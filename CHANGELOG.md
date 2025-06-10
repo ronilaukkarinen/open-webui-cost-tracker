@@ -1,3 +1,15 @@
+### 1.2.3: 2025-01-09
+
+* Fix token counting to include ALL messages (system prompts, user messages, assistant messages)
+* Replace `get_messages_content()` with manual extraction to ensure complete content capture
+* Properly count tokens from entire conversation context including system prompts
+
+### 1.2.2: 2025-01-09
+
+* Add comprehensive debug logging for token counting to help diagnose issues with long prompts
+* Debug output shows raw content length, processed content length, and token encoding details
+* Help identify if content is being truncated or miscounte
+
 ### 1.2.1: 2025-01-09
 
 * Remove non-existent `__model__` parameter from filter function signatures per Open WebUI documentation
