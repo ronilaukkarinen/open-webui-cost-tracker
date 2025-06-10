@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.3
+version: 1.2.5
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -379,6 +379,7 @@ class Filter:
         self.start_time = None
         self.input_tokens = 0
         self.processing_task = None
+        self.processing_shown = False
         pass
 
     def _sanitize_model_name(self, name: str) -> str:
@@ -580,27 +581,8 @@ class Filter:
             }
         )
 
-        # Auto-hide the processing message after 5 seconds as fallback (for non-streaming models)
-        async def hide_processing_message():
-            try:
-                await asyncio.sleep(5)
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": f"Processing {self.input_tokens} input tokens...",
-                            "done": True,
-                        },
-                    }
-                )
-            except asyncio.CancelledError:
-                # Task was cancelled by stream hook - this is expected
-                pass
-            except Exception:
-                pass  # Ignore errors if event_emitter fails
-
-        # Store the timeout task so we can cancel it when streaming starts
-        self.processing_task = asyncio.create_task(hide_processing_message())
+        # Store a flag so we can clear the processing message in outlet
+        self.processing_shown = True
 
         # add user email to payload in order to track costs
         if __user__:
@@ -620,9 +602,8 @@ class Filter:
         Stream hook - called when AI starts streaming response chunks
         This is where we detect actual streaming start and hide processing message
         """
-        # Cancel the processing message as soon as first stream chunk arrives
-        if self.processing_task and not self.processing_task.done():
-            self.processing_task.cancel()
+        # Mark that streaming has started so we know processing is done
+        self.processing_shown = False
 
         # Just pass through the stream event unchanged
         return event
@@ -633,6 +614,22 @@ class Filter:
         __event_emitter__: Callable[[Any], Awaitable[None]],
         __user__: Optional[dict] = None,
     ) -> dict:
+
+        # Always clear any processing message at the start of outlet
+        if hasattr(self, 'processing_shown') and self.processing_shown:
+            try:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": f"Processing {self.input_tokens} input tokens...",
+                            "done": True,
+                        },
+                    }
+                )
+                self.processing_shown = False
+            except Exception:
+                pass  # Ignore errors if event_emitter fails
 
         end_time = time.time()
         elapsed_time = end_time - self.start_time

@@ -1,3 +1,13 @@
+### 1.2.5: 2025-01-09
+
+* Remove timeout-based approach and ensure processing message is always cleared in outlet function regardless of response time
+
+### 1.2.4: 2025-01-09
+
+* Increase processing message timeout from 5 to 15 seconds for slower non-streaming models
+* Add explicit cleanup in outlet function to clear stuck processing messages
+* Fix issue where "Processing X input tokens..." message gets stuck with pipe-based or non-streaming models
+
 ### 1.2.3: 2025-01-09
 
 * Fix token counting to include ALL messages (system prompts, user messages, assistant messages)
