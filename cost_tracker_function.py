@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.14
+version: 1.2.16
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -270,6 +270,141 @@ class ModelCostManager:
                 name = name[: -len(suffix)]
         return name
 
+    def get_openai_pricing(self, model: str) -> dict:
+        """
+        Fallback OpenAI pricing for models not found in OpenRouter
+        Uses official OpenAI pricing as of January 2025
+        """
+        model_lower = model.lower()
+
+        # OpenAI GPT-4o series
+        if "gpt-4o" in model_lower:
+            if "mini" in model_lower:
+                return {
+                    "input_cost_per_token": 0.00000015,  # $0.15/1M tokens
+                    "output_cost_per_token": 0.0000006,  # $0.60/1M tokens
+                    "context_window": 128000,
+                }
+            else:
+                return {
+                    "input_cost_per_token": 0.0000025,   # $2.50/1M tokens (latest pricing)
+                    "output_cost_per_token": 0.00001,    # $10.00/1M tokens
+                    "context_window": 128000,
+                }
+
+        # OpenAI GPT-4.1 series (newest models)
+        if "gpt-4.1" in model_lower:
+            if "nano" in model_lower:
+                return {
+                    "input_cost_per_token": 0.0000001,   # $0.10/1M tokens
+                    "output_cost_per_token": 0.0000004,  # $0.40/1M tokens
+                    "context_window": 1047576,
+                }
+            elif "mini" in model_lower:
+                return {
+                    "input_cost_per_token": 0.0000004,   # $0.40/1M tokens
+                    "output_cost_per_token": 0.0000016,  # $1.60/1M tokens
+                    "context_window": 1047576,
+                }
+            else:
+                return {
+                    "input_cost_per_token": 0.000002,    # $2.00/1M tokens
+                    "output_cost_per_token": 0.000008,   # $8.00/1M tokens
+                    "context_window": 1047576,
+                }
+
+        # OpenAI GPT-4 series
+        if "gpt-4" in model_lower and "turbo" in model_lower:
+            return {
+                "input_cost_per_token": 0.00001,        # $10.00/1M tokens
+                "output_cost_per_token": 0.00003,       # $30.00/1M tokens
+                "context_window": 128000,
+            }
+        elif "gpt-4" in model_lower:
+            if "32k" in model_lower:
+                return {
+                    "input_cost_per_token": 0.00006,    # $60.00/1M tokens
+                    "output_cost_per_token": 0.00012,   # $120.00/1M tokens
+                    "context_window": 32000,
+                }
+            else:
+                return {
+                    "input_cost_per_token": 0.00003,    # $30.00/1M tokens
+                    "output_cost_per_token": 0.00006,   # $60.00/1M tokens
+                    "context_window": 8000,
+                }
+
+        # OpenAI o1 series (reasoning models)
+        if "o1-preview" in model_lower or "o1-2024" in model_lower:
+            return {
+                "input_cost_per_token": 0.000015,       # $15.00/1M tokens
+                "output_cost_per_token": 0.00006,       # $60.00/1M tokens
+                "context_window": 128000,
+            }
+        elif "o1-mini" in model_lower:
+            return {
+                "input_cost_per_token": 0.000003,       # $3.00/1M tokens
+                "output_cost_per_token": 0.000012,      # $12.00/1M tokens
+                "context_window": 128000,
+            }
+        elif "o3-mini" in model_lower or "o4-mini" in model_lower:
+            return {
+                "input_cost_per_token": 0.0000011,      # $1.10/1M tokens
+                "output_cost_per_token": 0.0000044,     # $4.40/1M tokens
+                "context_window": 128000,
+            }
+        elif "o3" in model_lower and "2025" in model_lower:
+            return {
+                "input_cost_per_token": 0.00001,        # $10.00/1M tokens
+                "output_cost_per_token": 0.00004,       # $40.00/1M tokens
+                "context_window": 128000,
+            }
+
+        # OpenAI GPT-3.5 series
+        if "gpt-3.5-turbo" in model_lower:
+            if "instruct" in model_lower:
+                return {
+                    "input_cost_per_token": 0.0000015,  # $1.50/1M tokens
+                    "output_cost_per_token": 0.000002,  # $2.00/1M tokens
+                    "context_window": 4000,
+                }
+            elif "16k" in model_lower:
+                return {
+                    "input_cost_per_token": 0.000003,   # $3.00/1M tokens
+                    "output_cost_per_token": 0.000004,  # $4.00/1M tokens
+                    "context_window": 16000,
+                }
+            else:
+                return {
+                    "input_cost_per_token": 0.0000005,  # $0.50/1M tokens (latest)
+                    "output_cost_per_token": 0.0000015, # $1.50/1M tokens
+                    "context_window": 16000,
+                }
+
+        # OpenAI embedding models
+        if "text-embedding-3-large" in model_lower:
+            return {
+                "input_cost_per_token": 0.00000013,     # $0.13/1M tokens
+                "output_cost_per_token": 0,              # No output cost for embeddings
+                "context_window": 8191,
+            }
+        elif "text-embedding-3-small" in model_lower:
+            return {
+                "input_cost_per_token": 0.00000002,     # $0.02/1M tokens
+                "output_cost_per_token": 0,              # No output cost for embeddings
+                "context_window": 8191,
+            }
+        elif "text-embedding-ada-002" in model_lower:
+            return {
+                "input_cost_per_token": 0.0000001,      # $0.10/1M tokens
+                "output_cost_per_token": 0,              # No output cost for embeddings
+                "context_window": 8191,
+            }
+
+        if Config.DEBUG:
+            print(f"{Config.DEBUG_PREFIX} No OpenAI pricing found for model: {model}")
+        return {}
+
     def get_model_data(self, model):
         if not model:
             return {}
@@ -301,6 +436,16 @@ class ModelCostManager:
             if model in model_id or model_id in model:
                 ModelCostManager._best_match_cache[model] = model_id
                 return json_data[model_id]
+
+        # Try OpenAI pricing fallback for OpenAI models
+        if ("gpt" in model.lower() or "o1" in model.lower() or "o3" in model.lower() or
+            "o4" in model.lower() or "text-embedding" in model.lower() or
+            "openai/" in model.lower()):
+            openai_pricing = self.get_openai_pricing(model)
+            if openai_pricing:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Using OpenAI fallback pricing for: {model}")
+                return openai_pricing
 
         print(f"{Config.INFO_PREFIX} Model '{model}' not found in costs json file!")
         return {}
@@ -502,9 +647,19 @@ class Filter:
                     print(f"{Config.DEBUG_PREFIX} Local provider detected: {model}")
                 return True
 
-            # External provider detected
+            # External provider detected (including OpenAI, Anthropic, Google, etc.)
             if Config.DEBUG:
                 print(f"{Config.DEBUG_PREFIX} External provider detected: {model}")
+            return False
+
+        # Check for direct OpenAI model names (without slash prefix)
+        openai_model_patterns = [
+            "gpt-4", "gpt-3.5", "gpt-35", "o1-", "o3-", "o4-",
+            "text-embedding", "davinci", "curie", "babbage", "ada"
+        ]
+        if any(pattern in model_lower for pattern in openai_model_patterns):
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} OpenAI model detected (without prefix): {model}")
             return False
 
         # Simple model names without slashes are typically local Ollama models
@@ -634,24 +789,13 @@ class Filter:
                     )
                 input_content = input_content[:max_content_size]
 
-            # Safe token counting with fallback
-            try:
-                enc = tiktoken.get_encoding("cl100k_base")
-                self.input_tokens = len(enc.encode(input_content))
-                if Config.DEBUG:
-                    print(
-                        f"{Config.DEBUG_PREFIX} Tiktoken encoding successful: {self.input_tokens} tokens"
-                    )
-            except Exception as encoding_error:
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Token encoding failed: {encoding_error}")
-                # Fallback: approximate token count (1.3 tokens per word)
-                word_count = len(input_content.split())
-                self.input_tokens = int(word_count * 1.3)
-                if Config.DEBUG:
-                    print(
-                        f"{Config.DEBUG_PREFIX} Fallback word count: {word_count} words -> {self.input_tokens} tokens"
-                    )
+            # Fast token counting without tiktoken (prevents UI hanging)
+            word_count = len(input_content.split())
+            self.input_tokens = int(word_count * 1.3)
+            if Config.DEBUG:
+                print(
+                    f"{Config.DEBUG_PREFIX} Fast token count: {word_count} words -> {self.input_tokens} tokens"
+                )
 
         except Exception as input_error:
             if Config.DEBUG:
@@ -765,15 +909,7 @@ class Filter:
             end_time = time.time()
             elapsed_time = end_time - self.start_time
 
-            await __event_emitter__(
-                {
-                    "type": "status",
-                    "data": {
-                        "description": "Computing number of output tokens...",
-                        "done": False,
-                    },
-                }
-            )
+            # Skip "Computing" message for faster completion
 
             model = self._get_auto_router_model(body)
 
@@ -790,14 +926,11 @@ class Filter:
                         )
                     output_content = output_content[:max_content_size]
 
-                try:
-                    enc = tiktoken.get_encoding("cl100k_base")
-                    output_tokens = len(enc.encode(output_content))
-                except Exception as output_encoding_error:
-                    if Config.DEBUG:
-                        print(f"{Config.DEBUG_PREFIX} Output token encoding failed: {output_encoding_error}")
-                    # Fallback: approximate token count
-                    output_tokens = int(len(output_content.split()) * 1.3)
+                # Fast token counting without tiktoken (prevents UI hanging)
+                word_count = len(output_content.split())
+                output_tokens = int(word_count * 1.3)
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Fast output token count: {word_count} words -> {output_tokens} tokens")
 
             except Exception as output_error:
                 if Config.DEBUG:
@@ -818,12 +951,7 @@ class Filter:
                 )
                 return body
 
-            await __event_emitter__(
-                {
-                    "type": "status",
-                    "data": {"description": "Computing total costs...", "done": False},
-                }
-            )
+            # Skip "Computing" message for faster completion
 
             total_cost = self.cost_calculator.calculate_costs(
                 model, self.input_tokens, output_tokens, self.valves.compensation

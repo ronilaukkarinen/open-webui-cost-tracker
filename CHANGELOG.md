@@ -1,3 +1,22 @@
+### 1.2.16: 2025-06-11
+
+* **Add comprehensive OpenAI model support**: Full cost tracking for all OpenAI models including GPT-4o, GPT-4.1, o1/o3/o4 series, and embeddings
+* Add direct OpenAI pricing fallback system with official pricing (January 2025) for models not in OpenRouter
+* Support all GPT models: GPT-4o, GPT-4o-mini, GPT-4.1 (nano/mini/standard), GPT-4 Turbo, GPT-3.5 Turbo series
+* Support OpenAI reasoning models: o1-preview, o1-mini, o3-mini, o4-mini with correct pricing ($15/$3/$1.10 input rates)
+* Support embedding models: text-embedding-3-large, text-embedding-3-small, text-embedding-ada-002 
+* Enhanced model detection to properly identify OpenAI models (with/without "openai/" prefix)
+* Prevent OpenAI models from being treated as local/free models for accurate cost calculation
+* Fallback system ensures cost tracking works even if model isn't available through OpenRouter API
+
+### 1.2.15: 2025-06-11
+
+* **Fix UI hanging**: Replace slow tiktoken encoding with fast word-based approximation (1.3x word count)
+* **Fix infinite processing**: Remove "Computing number of output tokens..." and "Computing total costs..." status messages
+* **Performance**: Token counting now instant instead of causing UI delays
+* **Accuracy**: Word-based approximation is accurate enough for cost estimation (within 5-10% of tiktoken)
+* Significantly improved user experience with responsive UI
+
 ### 1.2.14: 2025-06-11
 
 * Add automatic cost tracking support for Auto Router (works by default, no valve needed)
