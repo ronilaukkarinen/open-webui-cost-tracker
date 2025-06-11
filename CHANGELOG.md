@@ -1,3 +1,23 @@
+### 1.2.9: 2025-06-11
+
+* Fix Python scoping error "cannot access free variable 'e' where it is not associated with a value in enclosing scope"
+* Rename exception variable in nested async function to avoid scoping conflicts with outer scope variables
+
+### 1.2.8: 2025-06-11
+
+* Fix cost hiding threshold from < 0.0001 € to < 0.00001 € for more precise zero cost detection
+* Add automatic streaming disable for large requests (>10k tokens by default) to ensure cost tracking works properly
+* Add `disable_streaming_large_requests` valve setting (enabled by default) to control streaming behavior for large requests
+* Add `large_request_token_threshold` valve setting (default: 10000) to configure when streaming should be disabled
+* Fix issue where cost tracker would show nothing for very large token requests due to streaming issues
+
+### 1.2.7: 2025-06-11
+
+* Fix hide_zero_cost setting not working properly - was showing "X seconds, Y tokens and 0 € used" instead of "X seconds and Y tokens used"
+* Improve zero cost detection to include very small costs (< 0.0001 €) that should be hidden
+* Restructure cost formatting logic to only format cost string when actually displaying it
+* Enhanced hide_zero_cost logic to work correctly with natural language format
+
 ### 1.2.6: 2025-06-11
 
 * Fix persistent "Processing X input tokens..." message getting stuck with non-streaming APIs (OpenRouter, piped models)

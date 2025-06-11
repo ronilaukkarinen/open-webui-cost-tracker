@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.6
+version: 1.2.9
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -355,6 +355,14 @@ class Filter:
             default=True,
             description="Skip cost tracking for local/free models (models without OpenRouter pricing)",
         )
+        disable_streaming_large_requests: bool = Field(
+            default=True,
+            description="Disable streaming for requests with >10k tokens to ensure cost tracking works properly",
+        )
+        large_request_token_threshold: int = Field(
+            default=10000,
+            description="Token threshold above which streaming will be disabled (if disable_streaming_large_requests is enabled)",
+        )
         # Old format options (disabled by default)
         elapsed_time: bool = Field(
             default=False, description="Display the elapsed time (old format)"
@@ -584,7 +592,7 @@ class Filter:
         # Store a flag so we can clear the processing message in outlet
         self.processing_shown = True
 
-        # Add a timeout mechanism as backup for stuck processing messages
+                # Add a timeout mechanism as backup for stuck processing messages
         async def clear_processing_message_timeout():
             try:
                 await asyncio.sleep(10)  # Wait 10 seconds
@@ -601,13 +609,22 @@ class Filter:
                         }
                     )
                     self.processing_shown = False
-            except Exception as e:
+            except Exception as timeout_error:
                 if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Timeout cleanup failed: {e}")
+                    print(f"{Config.DEBUG_PREFIX} Timeout cleanup failed: {timeout_error}")
                 pass
 
         # Start timeout task in background (fire and forget)
         asyncio.create_task(clear_processing_message_timeout())
+
+        # Disable streaming for large requests to ensure cost tracking works properly
+        if (self.valves.disable_streaming_large_requests and
+            self.input_tokens > self.valves.large_request_token_threshold):
+            if Config.DEBUG:
+                print(
+                    f"{Config.DEBUG_PREFIX} Disabling streaming for large request: {self.input_tokens} tokens > {self.valves.large_request_token_threshold} threshold"
+                )
+            body["stream"] = False
 
         # add user email to payload in order to track costs
         if __user__:
@@ -780,14 +797,16 @@ class Filter:
                 else:
                     return f"{cost_eur:.6f} €"
 
-        cost_str = format_euros(total_cost_eur)
+        # Check if cost should be hidden (for zero or very small costs)
+        should_hide_cost = self.valves.hide_zero_cost and (total_cost_eur == 0 or total_cost_eur < 0.00001)
 
         if self.valves.use_natural_format:
             # Natural language format: "8 seconds, 3395 tokens and 0 € used"
             elapsed_seconds = int(round(elapsed_time))
-            if self.valves.hide_zero_cost and total_cost_eur == 0:
+            if should_hide_cost:
                 stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
             else:
+                cost_str = format_euros(total_cost_eur)
                 stats = (
                     f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
                 )
