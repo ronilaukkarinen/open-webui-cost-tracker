@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.10
+version: 1.2.14
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -436,6 +436,12 @@ class Filter:
 
         model_lower = model.lower()
 
+        # Special handling for Auto Router - always attempt cost tracking
+        if "auto" in model_lower or "router" in model_lower:
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Auto Router detected: {model} - will attempt cost tracking")
+            return False  # Don't treat Auto Router as local, attempt to track costs
+
         # Check for common local model indicators in the model name
         local_model_indicators = [
             # Ollama models (typically just model name without provider prefix)
@@ -507,6 +513,80 @@ class Filter:
                 f"{Config.DEBUG_PREFIX} Simple model name detected (likely local): {model}"
             )
         return True
+
+    def _get_auto_router_model(self, body: dict) -> str:
+        """
+        Try to extract the actual model used by Auto Router from response data
+        Auto Router may provide the selected model in various places:
+        - Response headers (x-model-used, model-used, etc.)
+        - Response metadata
+        - In the response body somewhere
+        """
+        model = self._get_model(body)
+
+        if not model:
+            return model
+
+        model_lower = model.lower()
+        if not ("auto" in model_lower or "router" in model_lower):
+            return model
+
+        if Config.DEBUG:
+            print(f"{Config.DEBUG_PREFIX} Attempting to resolve Auto Router model: {model}")
+
+        # Check if there's any model information in the response body
+        # Auto Router might include the selected model in various fields
+        potential_model_fields = [
+            "selected_model", "model_used", "actual_model", "routed_model",
+            "chosen_model", "target_model", "final_model"
+        ]
+
+        for field in potential_model_fields:
+            if field in body and body[field]:
+                detected_model = str(body[field])
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Found Auto Router model in {field}: {detected_model}")
+                return detected_model
+
+        # Check in messages array for any model metadata
+        if "messages" in body and isinstance(body["messages"], list):
+            for message in body["messages"]:
+                if isinstance(message, dict):
+                    # Check if Auto Router added metadata to any message
+                    for field in potential_model_fields + ["metadata", "model_info"]:
+                        if field in message and message[field]:
+                            if isinstance(message[field], dict):
+                                # Look inside metadata objects
+                                for subfield in potential_model_fields:
+                                    if subfield in message[field]:
+                                        detected_model = str(message[field][subfield])
+                                        if Config.DEBUG:
+                                            print(f"{Config.DEBUG_PREFIX} Found Auto Router model in message.{field}.{subfield}: {detected_model}")
+                                        return detected_model
+                            else:
+                                detected_model = str(message[field])
+                                if Config.DEBUG:
+                                    print(f"{Config.DEBUG_PREFIX} Found Auto Router model in message.{field}: {detected_model}")
+                                return detected_model
+
+        # If we can't detect the specific model, we'll use a fallback
+        # Use mid-tier model like GPT-3.5 for cost estimation
+        fallback_models = [
+            "openai/gpt-3.5-turbo",  # Most common fallback
+            "anthropic/claude-3-haiku",  # Fast model
+            "google/gemini-pro"  # Alternative
+        ]
+
+        for fallback in fallback_models:
+            model_data = self.model_cost_manager.get_model_data(fallback)
+            if model_data:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Auto Router fallback to {fallback} for cost estimation")
+                return fallback
+
+        if Config.DEBUG:
+            print(f"{Config.DEBUG_PREFIX} No fallback model found for Auto Router, returning original")
+        return model
 
     async def inlet(
         self,
@@ -592,10 +672,6 @@ class Filter:
         # Store a flag so we can clear the processing message in outlet
         self.processing_shown = True
 
-        # Create timeout task to clear stuck processing messages
-        # Capture variables to avoid scoping issues
-        self._create_timeout_task(__event_emitter__)
-
         # Disable streaming for large requests to ensure cost tracking works properly
         if (self.valves.disable_streaming_large_requests and
             self.input_tokens > self.valves.large_request_token_threshold):
@@ -618,32 +694,6 @@ class Filter:
 
         return body
 
-    def _create_timeout_task(self, event_emitter):
-        """Create a timeout task to clear stuck processing messages"""
-        async def clear_processing_message_timeout():
-            try:
-                await asyncio.sleep(10)  # Wait 10 seconds
-                if hasattr(self, 'processing_shown') and self.processing_shown:
-                    if Config.DEBUG:
-                        print(f"{Config.DEBUG_PREFIX} Timeout: clearing stuck processing message after 10 seconds")
-                    await event_emitter(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": f"Processing {self.input_tokens} input tokens...",
-                                "done": True,
-                            },
-                        }
-                    )
-                    self.processing_shown = False
-            except Exception as timeout_error:
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Timeout cleanup failed: {timeout_error}")
-                pass
-
-        # Start timeout task in background (fire and forget)
-        asyncio.create_task(clear_processing_message_timeout())
-
     def stream(self, event: dict) -> dict:
         """
         Stream hook - called when AI starts streaming response chunks
@@ -655,6 +705,31 @@ class Filter:
         # Just pass through the stream event unchanged
         return event
 
+    def _format_euros(self, cost_eur):
+        """Format cost in euros with smart rounding"""
+        if cost_eur == 0:
+            return "0 €"
+        elif cost_eur < 0.0001:
+            return "0 €"  # Treat very tiny costs as free
+        elif cost_eur >= 0.98 and cost_eur <= 1.02:
+            return "1 €"  # Round near 1 euro
+        elif cost_eur >= 1.98 and cost_eur <= 2.02:
+            return "2 €"  # Round near 2 euros
+        elif cost_eur >= 2.98 and cost_eur <= 3.02:
+            return "3 €"  # Round near 3 euros
+        elif cost_eur >= 3.98 and cost_eur <= 4.02:
+            return "4 €"  # Round near 4 euros
+        elif cost_eur >= 4.98 and cost_eur <= 5.02:
+            return "5 €"  # Round near 5 euros
+        elif cost_eur >= 1:
+            return f"{cost_eur:.0f} €"  # Round whole euros for larger amounts
+        else:
+            # For small costs, show meaningful decimals
+            if cost_eur >= 0.01:
+                return f"{cost_eur:.3f} €"
+            else:
+                return f"{cost_eur:.6f} €"
+
     async def outlet(
         self,
         body: dict,
@@ -662,162 +737,173 @@ class Filter:
         __user__: Optional[dict] = None,
     ) -> dict:
 
-        # Always clear any processing message at the start of outlet
-        # This is critical for non-streaming APIs (OpenRouter, piped models) where stream() is never called
-        if hasattr(self, 'processing_shown') and self.processing_shown:
-            try:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": f"Processing {self.input_tokens} input tokens...",
-                            "done": True,
-                        },
-                    }
-                )
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Cleared stuck processing message for {self.input_tokens} tokens")
-                self.processing_shown = False
-            except Exception as clear_error:
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Failed to clear processing message: {clear_error}")
-                pass  # Ignore errors if event_emitter fails
-
-        # Also clear processing_shown flag if it exists to prevent any future issues
-        self.processing_shown = False
-
-        end_time = time.time()
-        elapsed_time = end_time - self.start_time
-
-        await __event_emitter__(
-            {
-                "type": "status",
-                "data": {
-                    "description": "Computing number of output tokens...",
-                    "done": False,
-                },
-            }
-        )
-
-        model = self._get_model(body)
-
-        # Safe output token counting
         try:
-            output_content = get_last_assistant_message(body["messages"])
-
-            # Limit content size to prevent hanging
-            max_content_size = 5 * 1024 * 1024  # 5MB
-            if len(output_content) > max_content_size:
-                if Config.DEBUG:
-                    print(
-                        f"{Config.DEBUG_PREFIX} Output content too large ({len(output_content)} chars), truncating for token count"
+            # Always clear any processing message at the start of outlet
+            # This is critical for non-streaming APIs (OpenRouter, piped models) where stream() is never called
+            if hasattr(self, 'processing_shown') and self.processing_shown:
+                try:
+                    await __event_emitter__(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": f"Processing {self.input_tokens} input tokens...",
+                                "done": True,
+                            },
+                        }
                     )
-                output_content = output_content[:max_content_size]
+                    if Config.DEBUG:
+                        print(f"{Config.DEBUG_PREFIX} Cleared stuck processing message for {self.input_tokens} tokens")
+                    self.processing_shown = False
+                except Exception as clear_error:
+                    if Config.DEBUG:
+                        print(f"{Config.DEBUG_PREFIX} Failed to clear processing message: {clear_error}")
+                    pass  # Ignore errors if event_emitter fails
 
+            # Also clear processing_shown flag if it exists to prevent any future issues
+            self.processing_shown = False
+
+            end_time = time.time()
+            elapsed_time = end_time - self.start_time
+
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": "Computing number of output tokens...",
+                        "done": False,
+                    },
+                }
+            )
+
+            model = self._get_auto_router_model(body)
+
+            # Safe output token counting
             try:
-                enc = tiktoken.get_encoding("cl100k_base")
-                output_tokens = len(enc.encode(output_content))
-            except Exception as output_encoding_error:
+                output_content = get_last_assistant_message(body["messages"])
+
+                # Limit content size to prevent hanging
+                max_content_size = 5 * 1024 * 1024  # 5MB
+                if len(output_content) > max_content_size:
+                    if Config.DEBUG:
+                        print(
+                            f"{Config.DEBUG_PREFIX} Output content too large ({len(output_content)} chars), truncating for token count"
+                        )
+                    output_content = output_content[:max_content_size]
+
+                try:
+                    enc = tiktoken.get_encoding("cl100k_base")
+                    output_tokens = len(enc.encode(output_content))
+                except Exception as output_encoding_error:
+                    if Config.DEBUG:
+                        print(f"{Config.DEBUG_PREFIX} Output token encoding failed: {output_encoding_error}")
+                    # Fallback: approximate token count
+                    output_tokens = int(len(output_content.split()) * 1.3)
+
+            except Exception as output_error:
                 if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Output token encoding failed: {output_encoding_error}")
-                # Fallback: approximate token count
-                output_tokens = int(len(output_content.split()) * 1.3)
+                    print(f"{Config.DEBUG_PREFIX} Error processing output tokens: {output_error}")
+                # Fallback to zero if everything fails
+                output_tokens = 0
 
-        except Exception as output_error:
-            if Config.DEBUG:
-                print(f"{Config.DEBUG_PREFIX} Error processing output tokens: {output_error}")
-            # Fallback to zero if everything fails
-            output_tokens = 0
+            # Check if this is a local model and skip cost calculation if enabled
+            if self.valves.skip_free_models and self._is_local_model(model, body):
+                tokens = self.input_tokens + output_tokens
 
-        # Check if this is a local model and skip cost calculation if enabled
-        if self.valves.skip_free_models and self._is_local_model(model, body):
+                # For local models, just show time and tokens without cost
+                elapsed_seconds = int(round(elapsed_time))
+                stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
+
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": stats, "done": True}}
+                )
+                return body
+
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {"description": "Computing total costs...", "done": False},
+                }
+            )
+
+            total_cost = self.cost_calculator.calculate_costs(
+                model, self.input_tokens, output_tokens, self.valves.compensation
+            )
+
+            if __user__:
+                if "email" in __user__:
+                    user_email = __user__["email"]
+                else:
+                    print("**ERROR: User email not found!")
+                try:
+                    self.user_cost_manager.update_user_cost(
+                        user_email,
+                        model,
+                        self.input_tokens,
+                        output_tokens,
+                        total_cost,
+                    )
+                except Exception as cost_update_error:
+                    print("**ERROR: Unable to update user cost file!")
+            else:
+                print("**ERROR: User not found!")
+
             tokens = self.input_tokens + output_tokens
+            tokens_per_sec = tokens / elapsed_time
 
-            # For local models, just show time and tokens without cost
-            elapsed_seconds = int(round(elapsed_time))
-            stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
+            # Convert USD to EUR (approximate rate: 1 USD = 0.93 EUR)
+            total_cost_eur = float(total_cost) * 0.93
+
+            # Check if cost should be hidden (for zero or very small costs)
+            should_hide_cost = self.valves.hide_zero_cost and (total_cost_eur == 0 or total_cost_eur < 0.00001)
+
+            if self.valves.use_natural_format:
+                # Natural language format: "8 seconds, 3395 tokens and 0 € used"
+                elapsed_seconds = int(round(elapsed_time))
+                if should_hide_cost:
+                    stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
+                else:
+                    cost_str = self._format_euros(total_cost_eur)
+                    stats = (
+                        f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
+                    )
 
             await __event_emitter__(
                 {"type": "status", "data": {"description": stats, "done": True}}
             )
+
             return body
 
-        await __event_emitter__(
-            {
-                "type": "status",
-                "data": {"description": "Computing total costs...", "done": False},
-            }
-        )
+        except Exception as outlet_error:
+            # Comprehensive error handling to ensure we always show something
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Outlet error: {outlet_error}")
 
-        total_cost = self.cost_calculator.calculate_costs(
-            model, self.input_tokens, output_tokens, self.valves.compensation
-        )
-
-        if __user__:
-            if "email" in __user__:
-                user_email = __user__["email"]
-            else:
-                print("**ERROR: User email not found!")
+            # Calculate basic stats as fallback
             try:
-                self.user_cost_manager.update_user_cost(
-                    user_email,
-                    model,
-                    self.input_tokens,
-                    output_tokens,
-                    total_cost,
+                end_time = time.time()
+                elapsed_time = end_time - self.start_time
+                elapsed_seconds = int(round(elapsed_time))
+                tokens = getattr(self, 'input_tokens', 0)
+
+                # Ensure processing message is cleared
+                self.processing_shown = False
+
+                # Show basic stats even if everything else failed
+                stats = f"{elapsed_seconds} seconds and {tokens} tokens used (error in cost calculation)"
+
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": stats, "done": True}}
                 )
-            except Exception as _:
-                print("**ERROR: Unable to update user cost file!")
-        else:
-            print("**ERROR: User not found!")
+            except Exception as fallback_error:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Fallback error: {fallback_error}")
+                # Last resort - just clear the processing message
+                try:
+                    self.processing_shown = False
+                    await __event_emitter__(
+                        {"type": "status", "data": {"description": "Cost calculation completed", "done": True}}
+                    )
+                except Exception:
+                    pass  # Give up gracefully
 
-        tokens = self.input_tokens + output_tokens
-        tokens_per_sec = tokens / elapsed_time
-
-        # Convert USD to EUR (approximate rate: 1 USD = 0.93 EUR)
-        total_cost_eur = float(total_cost) * 0.93
-
-        # Smart euro formatting
-        def format_euros(cost_eur):
-            if cost_eur == 0:
-                return "0 €"
-            elif cost_eur < 0.0001:
-                return "0 €"  # Treat very tiny costs as free
-            elif cost_eur >= 0.98 and cost_eur <= 1.02:
-                return "1 €"  # Round near 1 euro
-            elif cost_eur >= 1.98 and cost_eur <= 2.02:
-                return "2 €"  # Round near 2 euros
-            elif cost_eur >= 2.98 and cost_eur <= 3.02:
-                return "3 €"  # Round near 3 euros
-            elif cost_eur >= 3.98 and cost_eur <= 4.02:
-                return "4 €"  # Round near 4 euros
-            elif cost_eur >= 4.98 and cost_eur <= 5.02:
-                return "5 €"  # Round near 5 euros
-            elif cost_eur >= 1:
-                return f"{cost_eur:.0f} €"  # Round whole euros for larger amounts
-            else:
-                # For small costs, show meaningful decimals
-                if cost_eur >= 0.01:
-                    return f"{cost_eur:.3f} €"
-                else:
-                    return f"{cost_eur:.6f} €"
-
-        # Check if cost should be hidden (for zero or very small costs)
-        should_hide_cost = self.valves.hide_zero_cost and (total_cost_eur == 0 or total_cost_eur < 0.00001)
-
-        if self.valves.use_natural_format:
-            # Natural language format: "8 seconds, 3395 tokens and 0 € used"
-            elapsed_seconds = int(round(elapsed_time))
-            if should_hide_cost:
-                stats = f"{elapsed_seconds} seconds and {tokens} tokens used"
-            else:
-                cost_str = format_euros(total_cost_eur)
-                stats = (
-                    f"{elapsed_seconds} seconds, {tokens} tokens and {cost_str} used"
-                )
-
-        await __event_emitter__(
-            {"type": "status", "data": {"description": stats, "done": True}}
-        )
-
-        return body
+            return body

@@ -1,3 +1,36 @@
+### 1.2.14: 2025-06-11
+
+* Add automatic cost tracking support for Auto Router (works by default, no valve needed)
+* Prevent Auto Router from being treated as a local/free model - now attempts cost calculation
+* Add comprehensive model detection for Auto Router by checking response metadata and message fields
+* Implement intelligent fallback pricing using common models (GPT-3.5, Claude Haiku, Gemini Pro) when exact model can't be detected
+* Enable cost tracking for Auto Router instead of showing only "X seconds and Y tokens used"
+* Auto Router detection works automatically without configuration
+
+### 1.2.13: 2025-06-11
+
+* Completely rewrite outlet method to fix persistent scoping errors and stuck processing messages
+* Move format_euros function outside outlet method to eliminate nested function scoping issues
+* Add comprehensive error handling with multiple fallback levels to ensure messages are always cleared
+* Fix issue where "Processing X input tokens..." gets stuck with shorter token requests
+* Add robust exception handling to guarantee cost tracking always shows a result
+* Eliminate all nested function variable capture that caused "cannot access free variable 'e'" errors
+
+### 1.2.12: 2025-06-11
+
+* Remove timeout mechanism completely to eliminate persistent scoping errors
+* Simplify inlet method by removing problematic nested async function architecture  
+* Fix "cannot access free variable 'e'" error by eliminating complex closure variable capture
+* Processing messages will now only be cleared by outlet method and stream method (no timeout fallback)
+* Cleaner, more reliable code without nested function scoping complications
+
+### 1.2.11: 2025-06-11
+
+* Fix remaining scoping issues: replace `except Exception as _:` with proper variable name
+* Add explicit variable capture in timeout function to avoid closure-related scoping errors  
+* Capture `self.input_tokens` as local variable `input_tokens` in nested function to prevent variable access issues
+* Final resolution of "cannot access free variable 'e'" error through comprehensive scoping fixes
+
 ### 1.2.10: 2025-06-11
 
 * Fix persistent Python scoping error by refactoring nested async function architecture
