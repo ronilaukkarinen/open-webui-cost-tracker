@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.5
+version: 1.2.6
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -584,6 +584,31 @@ class Filter:
         # Store a flag so we can clear the processing message in outlet
         self.processing_shown = True
 
+        # Add a timeout mechanism as backup for stuck processing messages
+        async def clear_processing_message_timeout():
+            try:
+                await asyncio.sleep(10)  # Wait 10 seconds
+                if hasattr(self, 'processing_shown') and self.processing_shown:
+                    if Config.DEBUG:
+                        print(f"{Config.DEBUG_PREFIX} Timeout: clearing stuck processing message after 10 seconds")
+                    await __event_emitter__(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": f"Processing {self.input_tokens} input tokens...",
+                                "done": True,
+                            },
+                        }
+                    )
+                    self.processing_shown = False
+            except Exception as e:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Timeout cleanup failed: {e}")
+                pass
+
+        # Start timeout task in background (fire and forget)
+        asyncio.create_task(clear_processing_message_timeout())
+
         # add user email to payload in order to track costs
         if __user__:
             if "email" in __user__:
@@ -616,6 +641,7 @@ class Filter:
     ) -> dict:
 
         # Always clear any processing message at the start of outlet
+        # This is critical for non-streaming APIs (OpenRouter, piped models) where stream() is never called
         if hasattr(self, 'processing_shown') and self.processing_shown:
             try:
                 await __event_emitter__(
@@ -627,9 +653,16 @@ class Filter:
                         },
                     }
                 )
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Cleared stuck processing message for {self.input_tokens} tokens")
                 self.processing_shown = False
-            except Exception:
+            except Exception as e:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Failed to clear processing message: {e}")
                 pass  # Ignore errors if event_emitter fails
+
+        # Also clear processing_shown flag if it exists to prevent any future issues
+        self.processing_shown = False
 
         end_time = time.time()
         elapsed_time = end_time - self.start_time
