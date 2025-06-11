@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: Roni Laukkarinen (original code by Kkoolldd, maki, bgeneto)
 author_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
 funding_url: https://github.com/ronilaukkarinen/open-webui-cost-tracker
-version: 1.2.9
+version: 1.2.10
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -166,8 +166,8 @@ class ModelCostManager:
             try:
                 if os.path.exists(self.cache_file_path):
                     os.rename(self.cache_file_path, self.cache_file_path + ".bkp")
-            except Exception as e:
-                print(f"**ERROR: Failed to backup costs json file. Error: {e}")
+            except Exception as backup_error:
+                print(f"**ERROR: Failed to backup costs json file. Error: {backup_error}")
 
             with self.lock:
                 with open(self.cache_file_path, "w", encoding="UTF-8") as cache_file:
@@ -176,9 +176,9 @@ class ModelCostManager:
                     json.dump(transformed_data, cache_file, indent=2)
             return transformed_data
 
-        except Exception as e:
+        except Exception as cost_data_error:
             print(
-                f"**ERROR: Failed to download or write to costs json file. Using old cached file if available. Error: {e}"
+                f"**ERROR: Failed to download or write to costs json file. Using old cached file if available. Error: {cost_data_error}"
             )
             with self.lock:
                 if os.path.exists(self.cache_file_path + ".bkp"):
@@ -191,7 +191,7 @@ class ModelCostManager:
                             )
                         return json.load(cache_file)
                 else:
-                    raise e
+                    raise cost_data_error
 
     def levenshtein_distance(self, s1, s2):
         m, n = len(s1), len(s2)
@@ -562,9 +562,9 @@ class Filter:
                     print(
                         f"{Config.DEBUG_PREFIX} Tiktoken encoding successful: {self.input_tokens} tokens"
                     )
-            except Exception as e:
+            except Exception as encoding_error:
                 if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Token encoding failed: {e}")
+                    print(f"{Config.DEBUG_PREFIX} Token encoding failed: {encoding_error}")
                 # Fallback: approximate token count (1.3 tokens per word)
                 word_count = len(input_content.split())
                 self.input_tokens = int(word_count * 1.3)
@@ -573,9 +573,9 @@ class Filter:
                         f"{Config.DEBUG_PREFIX} Fallback word count: {word_count} words -> {self.input_tokens} tokens"
                     )
 
-        except Exception as e:
+        except Exception as input_error:
             if Config.DEBUG:
-                print(f"{Config.DEBUG_PREFIX} Error processing input: {e}")
+                print(f"{Config.DEBUG_PREFIX} Error processing input: {input_error}")
             # Fallback to zero tokens if everything fails
             self.input_tokens = 0
 
@@ -592,30 +592,9 @@ class Filter:
         # Store a flag so we can clear the processing message in outlet
         self.processing_shown = True
 
-                # Add a timeout mechanism as backup for stuck processing messages
-        async def clear_processing_message_timeout():
-            try:
-                await asyncio.sleep(10)  # Wait 10 seconds
-                if hasattr(self, 'processing_shown') and self.processing_shown:
-                    if Config.DEBUG:
-                        print(f"{Config.DEBUG_PREFIX} Timeout: clearing stuck processing message after 10 seconds")
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": f"Processing {self.input_tokens} input tokens...",
-                                "done": True,
-                            },
-                        }
-                    )
-                    self.processing_shown = False
-            except Exception as timeout_error:
-                if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Timeout cleanup failed: {timeout_error}")
-                pass
-
-        # Start timeout task in background (fire and forget)
-        asyncio.create_task(clear_processing_message_timeout())
+        # Create timeout task to clear stuck processing messages
+        # Capture variables to avoid scoping issues
+        self._create_timeout_task(__event_emitter__)
 
         # Disable streaming for large requests to ensure cost tracking works properly
         if (self.valves.disable_streaming_large_requests and
@@ -638,6 +617,32 @@ class Filter:
         self.start_time = time.time()
 
         return body
+
+    def _create_timeout_task(self, event_emitter):
+        """Create a timeout task to clear stuck processing messages"""
+        async def clear_processing_message_timeout():
+            try:
+                await asyncio.sleep(10)  # Wait 10 seconds
+                if hasattr(self, 'processing_shown') and self.processing_shown:
+                    if Config.DEBUG:
+                        print(f"{Config.DEBUG_PREFIX} Timeout: clearing stuck processing message after 10 seconds")
+                    await event_emitter(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": f"Processing {self.input_tokens} input tokens...",
+                                "done": True,
+                            },
+                        }
+                    )
+                    self.processing_shown = False
+            except Exception as timeout_error:
+                if Config.DEBUG:
+                    print(f"{Config.DEBUG_PREFIX} Timeout cleanup failed: {timeout_error}")
+                pass
+
+        # Start timeout task in background (fire and forget)
+        asyncio.create_task(clear_processing_message_timeout())
 
     def stream(self, event: dict) -> dict:
         """
@@ -673,9 +678,9 @@ class Filter:
                 if Config.DEBUG:
                     print(f"{Config.DEBUG_PREFIX} Cleared stuck processing message for {self.input_tokens} tokens")
                 self.processing_shown = False
-            except Exception as e:
+            except Exception as clear_error:
                 if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Failed to clear processing message: {e}")
+                    print(f"{Config.DEBUG_PREFIX} Failed to clear processing message: {clear_error}")
                 pass  # Ignore errors if event_emitter fails
 
         # Also clear processing_shown flag if it exists to prevent any future issues
@@ -712,15 +717,15 @@ class Filter:
             try:
                 enc = tiktoken.get_encoding("cl100k_base")
                 output_tokens = len(enc.encode(output_content))
-            except Exception as e:
+            except Exception as output_encoding_error:
                 if Config.DEBUG:
-                    print(f"{Config.DEBUG_PREFIX} Output token encoding failed: {e}")
+                    print(f"{Config.DEBUG_PREFIX} Output token encoding failed: {output_encoding_error}")
                 # Fallback: approximate token count
                 output_tokens = int(len(output_content.split()) * 1.3)
 
-        except Exception as e:
+        except Exception as output_error:
             if Config.DEBUG:
-                print(f"{Config.DEBUG_PREFIX} Error processing output tokens: {e}")
+                print(f"{Config.DEBUG_PREFIX} Error processing output tokens: {output_error}")
             # Fallback to zero if everything fails
             output_tokens = 0
 

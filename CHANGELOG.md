@@ -1,3 +1,10 @@
+### 1.2.10: 2025-06-11
+
+* Fix persistent Python scoping error by refactoring nested async function architecture
+* Move timeout mechanism from nested inline function to separate method to avoid variable capture issues
+* Replace problematic nested function scope with explicit parameter passing for event_emitter
+* Eliminate Python variable scoping conflicts that caused "cannot access free variable" errors
+
 ### 1.2.9: 2025-06-11
 
 * Fix Python scoping error "cannot access free variable 'e' where it is not associated with a value in enclosing scope"
