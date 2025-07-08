@@ -1,5 +1,6 @@
 > [!NOTE]
 > This tool is a revised fork of [bgeneto/open-webui-cost-tracker](https://github.com/bgeneto/open-webui-cost-tracker). It has a lot of more valves and some bug fixes for example for free and piped LLMs.
+> **Succeeded by [open-webui-simple-cost-tracker](https://github.com/ronilaukkarinen/open-webui-simple-cost-tracker)**.
 
 # Time Token And Cost Tracker
 
